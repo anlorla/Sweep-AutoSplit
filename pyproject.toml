@@ -1,0 +1,78 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "sweep-auto-split"
+version = "0.2.0"
+description = "基于 Pi/LeRobot 的 Sweep 动作自动切分工具"
+readme = "README.md"
+license = {text = "MIT"}
+requires-python = ">=3.10"
+authors = [
+    {name = "Zeno", email = "zeno@example.com"},
+]
+keywords = ["robotics", "lerobot", "data-processing", "sweep", "segmentation"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+
+dependencies = [
+    "numpy>=1.21.0",
+    "pandas>=1.4.0",
+    "pyarrow>=8.0.0",
+    "opencv-python>=4.5.0",
+    "lerobot>=0.1.0",
+]
+
+[project.optional-dependencies]
+viz = [
+    "matplotlib>=3.5.0",
+]
+dev = [
+    "pytest>=7.0.0",
+    "pytest-cov>=3.0.0",
+    "black>=22.0.0",
+    "isort>=5.10.0",
+    "mypy>=0.950",
+]
+all = [
+    "sweep-auto-split[viz,dev]",
+]
+
+[project.scripts]
+sweep-auto-split = "sweep_auto_split.main:main"
+
+[project.urls]
+"Homepage" = "https://github.com/zeno/sweep-auto-split"
+"Bug Tracker" = "https://github.com/zeno/sweep-auto-split/issues"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["sweep_auto_split*"]
+
+[tool.black]
+line-length = 100
+target-version = ["py310", "py311", "py312"]
+
+[tool.isort]
+profile = "black"
+line_length = 100
+
+[tool.mypy]
+python_version = "3.10"
+warn_return_any = true
+warn_unused_configs = true
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+addopts = "-v --tb=short"
