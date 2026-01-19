@@ -6,9 +6,7 @@ M_t = mask(frame_{T_t0}) XOR mask(frame_{T_t1})
 
 该 mask 表示"这次 sweep 会改变哪些区域"，作为训练的 visual prompt。
 
-支持两种分割方法：
-1. HSV颜色分割（快速，适合红色乐高积木）
-2. SAM3分割（精确，需要模型）
+使用 HSV 颜色分割方法（快速，适合红色乐高积木）
 """
 
 import os
@@ -216,7 +214,7 @@ class HSVLegoSegmenter:
     """
     基于HSV颜色的乐高积木分割器
 
-    比SAM3更快，适合快速验证pipeline
+    快速高效，适合红色乐高积木的颜色分割
     """
 
     def __init__(self, config: Optional[MaskConfig] = None):
@@ -743,29 +741,19 @@ class SweepMaskGenerator:
 
 
 def create_mask_generator(
-    method: str = "hsv",
     config: Optional[MaskConfig] = None
 ) -> SweepMaskGenerator:
     """
-    工厂函数：创建mask生成器
+    工厂函数：创建mask生成器（使用HSV颜色分割）
 
     Args:
-        method: 分割方法 ("hsv" 或 "sam3")
         config: mask配置
 
     Returns:
         SweepMaskGenerator实例
     """
     config = config or MaskConfig()
-
-    if method == "hsv":
-        segmenter = HSVLegoSegmenter(config)
-    elif method == "sam3":
-        # TODO: 实现SAM3分割器
-        raise NotImplementedError("SAM3 segmenter not implemented yet")
-    else:
-        raise ValueError(f"Unknown method: {method}")
-
+    segmenter = HSVLegoSegmenter(config)
     return SweepMaskGenerator(segmenter, config)
 
 

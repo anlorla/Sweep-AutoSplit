@@ -62,7 +62,6 @@ class ExportConfig:
     verbose: bool = True
     # Mask export options
     export_mask: bool = True  # 是否导出 sweep mask
-    mask_method: str = "hsv"  # mask 分割方法: "hsv" 或 "sam3"
 
 
 @dataclass
@@ -97,7 +96,7 @@ class LeRobotSegmentExporter:
 
         # 初始化 mask 生成器
         if config.export_mask:
-            self.mask_generator = create_mask_generator(config.mask_method)
+            self.mask_generator = create_mask_generator()
         else:
             self.mask_generator = None
 
@@ -978,7 +977,6 @@ def export_segmented_dataset(
     config: Optional[SweepSegmentConfig] = None,
     task_prefix: str = "sweep",
     export_mask: bool = True,
-    mask_method: str = "hsv"
 ) -> Dict[str, Any]:
     """
     便捷函数：导出切分后的数据集
@@ -990,7 +988,6 @@ def export_segmented_dataset(
         config: 切分配置（可选）
         task_prefix: 任务前缀
         export_mask: 是否导出 sweep mask
-        mask_method: mask 分割方法 ("hsv" 或 "sam3")
 
     Returns:
         导出统计信息
@@ -1006,7 +1003,6 @@ def export_segmented_dataset(
         fps=data_loader.fps,
         verbose=config.verbose if config else True,
         export_mask=export_mask,
-        mask_method=mask_method
     )
 
     # 创建导出器

@@ -423,13 +423,6 @@ Examples:
         action="store_false",
         help="不导出 sweep mask"
     )
-    parser.add_argument(
-        "--mask-method",
-        type=str,
-        default="hsv",
-        choices=["hsv", "sam3"],
-        help="mask 分割方法: hsv (颜色分割) 或 sam3 (SAM3模型) (default: hsv)"
-    )
 
     args = parser.parse_args()
 
@@ -498,7 +491,6 @@ Examples:
             config=config,
             task_prefix=args.task_prefix,
             export_mask=args.export_mask,
-            mask_method=args.mask_method,
         )
 
         print(f"\nExport complete:")
