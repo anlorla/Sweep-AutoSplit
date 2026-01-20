@@ -15,7 +15,7 @@ Segment 边界计算模块
 
 Segment 边界：
     T_t0 = s_min
-    T_t1 = s_min + H - 1  (使用 s_min 作为起点)
+    T_t1 = s_max + H - 1  (使用 s_min 作为起点)
 
     注意：多样性 diversity = s_max - s_min + 1 表示训练时可用的起点数量
 """
@@ -122,7 +122,7 @@ class SegmentCalculator:
             # T_t0 = s_min
             # T_t1 = s_min + H - 1 (固定长度 H)
             T_t0 = s_min
-            T_t1 = s_min + H - 1
+            T_t1 = s_max + H - 1
 
             # 多样性
             diversity = s_max - s_min + 1 if is_valid else 0
