@@ -8,17 +8,16 @@ Segment 边界计算模块
 2. s >= P_t1 - H + 1 + R_min  (窗口右侧有足够 Retreat)
 3. s >= P_{t-1,1} + 1         (不混入上一个 sweep)
 4. s <= P_{t+1,0} - H         (不混入下一个 sweep)
-5. T_t1 < T_{t+1,0}           (segment 不能重叠) [新增]
 
 合格区间：
     s_min = max(P_{t-1,1}+1, P_t1-H+1+R_min)
     s_max = min(P_t0-A_min, P_{t+1,0}-H)
 
-Segment 边界（非重叠）：
+Segment 边界：
     T_t0 = s_min
-    T_t1 = s_min + H - 1  (使用 s_min 作为起点，保证不重叠)
+    T_t1 = s_min + H - 1  (使用 s_min 作为起点)
 
-    注意：多样性 diversity = s_max - s_min + 1 仍然表示训练时可用的起点数量
+    注意：多样性 diversity = s_max - s_min + 1 表示训练时可用的起点数量
 """
 
 import numpy as np
@@ -117,15 +116,13 @@ class SegmentCalculator:
             is_valid = s_min <= s_max
 
             # ============================================================
-            # 计算 segment 边界（非重叠版本）
+            # 计算 segment 边界
             # ============================================================
-            # 使用 s_min 作为起点，保证连续 segment 不重叠
+            # 使用 s_min 作为起点
             # T_t0 = s_min
             # T_t1 = s_min + H - 1 (固定长度 H)
-            #
-            # 多样性仍然记录 s_max - s_min + 1，表示训练时可用的起点数量
             T_t0 = s_min
-            T_t1 = s_min + H - 1  # 固定 H 长度，保证不重叠
+            T_t1 = s_min + H - 1
 
             # 多样性
             diversity = s_max - s_min + 1 if is_valid else 0
@@ -148,84 +145,6 @@ class SegmentCalculator:
                 print(f"      s_min={s_min} (constraint_3={constraint_3}, constraint_2={constraint_2})")
                 print(f"      s_max={s_max} (constraint_1={constraint_1}, constraint_4={constraint_4})")
                 print(f"      T=[{T_t0}, {T_t1}], diversity={diversity}")
-
-        # ============================================================
-        # 后处理：确保没有重叠（约束 5）
-        # ============================================================
-        boundaries = self._ensure_no_overlap(boundaries, config.verbose)
-
-        return boundaries
-
-    def _ensure_no_overlap(
-        self,
-        boundaries: List[SegmentBoundary],
-        verbose: bool = False
-    ) -> List[SegmentBoundary]:
-        """
-        确保相邻 segment 不重叠
-
-        策略：调整后续 segment 的起点，而不是标记为无效
-        只有当调整后的 segment 长度太短时才标记为无效
-        """
-        if len(boundaries) < 2:
-            return boundaries
-
-        H = self.config.H
-        min_segment_length = 10  # 最小 segment 长度
-
-        # 按 T_t0 排序处理
-        valid_indices = [i for i, b in enumerate(boundaries) if b.is_valid]
-
-        prev_T_t1 = -1  # 前一个有效 segment 的结束帧
-
-        for idx in valid_indices:
-            curr = boundaries[idx]
-
-            # 检查是否与前一个 segment 重叠
-            if prev_T_t1 >= 0 and curr.T_t0 <= prev_T_t1:
-                # 需要调整当前 segment 的起点
-                new_T_t0 = prev_T_t1 + 1
-                new_T_t1 = new_T_t0 + H - 1
-
-                # 检查调整后的 segment 是否仍然包含 sweep 的核心部分
-                # sweep 核心部分是 [P_t0, P_t1]
-                # 需要确保 new_T_t0 <= P_t0 且 new_T_t1 >= P_t1
-
-                # 如果调整后长度太短或无法覆盖 sweep，则调整边界但保持有效
-                new_length = new_T_t1 - new_T_t0 + 1
-
-                if new_length >= min_segment_length:
-                    if verbose:
-                        print(f"  [Adjusted] Sweep {curr.sweep_idx}: T=[{curr.T_t0}, {curr.T_t1}] -> T=[{new_T_t0}, {new_T_t1}]")
-
-                    # 更新边界
-                    boundaries[idx] = SegmentBoundary(
-                        sweep_idx=curr.sweep_idx,
-                        s_min=new_T_t0,  # 更新 s_min 为新起点
-                        s_max=curr.s_max,
-                        T_t0=new_T_t0,
-                        T_t1=new_T_t1,
-                        diversity=max(curr.s_max - new_T_t0 + 1, 1),  # 重新计算多样性
-                        is_valid=True
-                    )
-                    prev_T_t1 = new_T_t1
-                else:
-                    # 如果调整后太短，标记为无效
-                    if verbose:
-                        print(f"  [Warning] Sweep {curr.sweep_idx} too short after adjustment, marked invalid")
-
-                    boundaries[idx] = SegmentBoundary(
-                        sweep_idx=curr.sweep_idx,
-                        s_min=curr.s_min,
-                        s_max=curr.s_max,
-                        T_t0=curr.T_t0,
-                        T_t1=curr.T_t1,
-                        diversity=0,
-                        is_valid=False
-                    )
-            else:
-                # 没有重叠，保持不变
-                prev_T_t1 = curr.T_t1
 
         return boundaries
 

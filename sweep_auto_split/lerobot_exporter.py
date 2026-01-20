@@ -295,6 +295,8 @@ class LeRobotSegmentExporter:
         """
         使用 FFmpeg 导出视频片段（软件解码）
 
+        关键：使用 setpts=PTS-STARTPTS 确保切片后时间戳归零
+
         Args:
             source_video_path: 源视频路径
             output_video_path: 输出视频路径
@@ -313,8 +315,13 @@ class LeRobotSegmentExporter:
             # 计算时间参数
             start_time = start_frame / fps
             duration = (end_frame - start_frame + 1) / fps
+            num_frames = end_frame - start_frame + 1
 
-            # 先尝试使用帧号范围精确选择（推荐方式，避免 AV1 seek 问题）
+            # 构建 video filter：选择帧范围 + 重置时间戳 + 固定帧率
+            # setpts=PTS-STARTPTS 确保时间戳从 0 开始
+            # fps={fps} 确保输出帧率正确
+            vf_filter = f'select=gte(n\\,{start_frame})*lte(n\\,{end_frame}),setpts=PTS-STARTPTS,fps={fps}'
+
             cmd = [
                 'ffmpeg',
                 '-hide_banner',
@@ -322,8 +329,7 @@ class LeRobotSegmentExporter:
                 '-nostdin',
                 '-hwaccel', 'none',  # 禁用硬件加速
                 '-i', source_video_path,
-                '-vf', f'select=gte(n\\,{start_frame})*lte(n\\,{end_frame})',  # 按帧号范围选择
-                '-vsync', '0',
+                '-vf', vf_filter,
                 '-c:v', 'libx264',  # 使用 H.264 编码
                 '-preset', 'fast',
                 '-crf', '18',
@@ -347,6 +353,9 @@ class LeRobotSegmentExporter:
             if self.config.verbose:
                 print(f"Frame-based selection failed, trying time-based seek for {source_video_path}")
 
+            # 时间范围方式：同样使用 setpts 重置时间戳
+            vf_filter_time = f'setpts=PTS-STARTPTS,fps={fps}'
+
             cmd_time_based = [
                 'ffmpeg',
                 '-hide_banner',
@@ -356,6 +365,7 @@ class LeRobotSegmentExporter:
                 '-ss', str(start_time),
                 '-i', source_video_path,
                 '-t', str(duration),
+                '-vf', vf_filter_time,
                 '-c:v', 'libx264',
                 '-preset', 'fast',
                 '-crf', '18',

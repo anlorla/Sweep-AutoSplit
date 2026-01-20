@@ -58,27 +58,18 @@ python -m sweep_auto_split.main \
 ```bash
 python -m sweep_auto_split.main \
     --input /home/zeno-yifan/NPM-Project/datasets/sweep_to_C \
-    --output /home/zeno-yifan/NPM-Project/datasets/sweep_to_C_autosplit_v1 \
+    --output /home/zeno-yifan/NPM-Project/datasets/sweep_to_C_autosplit_v2 \
     --arm both
 ```
 
 ### 3. 生成可视化
 
 ```bash
-# 静态图片
 python -m sweep_auto_split.visualize_sweep \
-    --input /path/to/lerobot_dataset \
+    --input /home/zeno-yifan/NPM-Project/datasets/sweep_to_C  \
     --output ./sweep_viz \
     --max-episodes 5 \
     --arm left
-
-# 动态视频
-python -m sweep_auto_split.visualize_sweep \
-    --input /home/zeno-yifan/NPM-Project/datasets/sweep_to_C \
-    --output ./sweep_viz_video \
-    --arm both \
-    --video \
-    --video-fps 15
 ```
 
 ## 检测算法说明
