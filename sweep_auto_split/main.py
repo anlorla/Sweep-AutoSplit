@@ -429,6 +429,12 @@ Examples:
         default=None,
         help="ROI 配置文件路径 (用于 mask 四边形过滤，默认使用项目根目录的 config.yaml)"
     )
+    parser.add_argument(
+        "--export_workers",
+        type=int,
+        default=1,
+        help="视频导出并行进程数 (default: 1)"
+    )
 
     args = parser.parse_args()
 
@@ -498,6 +504,7 @@ Examples:
             task_prefix=args.task_prefix,
             export_mask=args.export_mask,
             roi_config_path=args.roi_config,
+            export_workers=args.export_workers,
         )
 
         print(f"\nExport complete:")
