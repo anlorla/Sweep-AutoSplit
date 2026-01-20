@@ -60,19 +60,36 @@ def plot_sweep_detection(
     kinematics = DualArmKinematics(kin_config)
 
     # 计算运动学
-    arm = config.active_arm if config.active_arm != "both" else "left"
-    kin_result = kinematics.compute_full_kinematics(
-        episode_data.state_trajectory,
-        arm=arm
-    )
+    state_trajectory = episode_data.state_trajectory
+    ee_pose_trajectory = episode_data.ee_pose_trajectory
 
-    # 提取信号
-    tip_to_table = kin_result.tip_to_table_distance  # 刷尖到桌面距离 (m)
-    v_xy = kin_result.v_xy  # 水平速度 (m/s)
+    # 计算左右两臂的运动学数据
+    if ee_pose_trajectory is not None:
+        from .kinematics import compute_full_kinematics_from_ee_pose
+        kin_result_right = compute_full_kinematics_from_ee_pose(
+            ee_pose_trajectory, arm="right", config=kin_config
+        )
+        kin_result_left = compute_full_kinematics_from_ee_pose(
+            ee_pose_trajectory, arm="left", config=kin_config
+        )
+    else:
+        kinematics = DualArmKinematics(kin_config)
+        kin_result_right = kinematics.compute_full_kinematics(
+            state_trajectory, arm="right"
+        )
+        kin_result_left = kinematics.compute_full_kinematics(
+            state_trajectory, arm="left"
+        )
+
+    # 提取数据
+    tip_to_table_right = kin_result_right.tip_to_table_distance
+    tip_to_table_left = kin_result_left.tip_to_table_distance
+
+    N = len(tip_to_table_right)
 
     # 平滑信号
-    d_smooth = smooth_signal(tip_to_table, config.smoothing_window)
-    v_xy_smooth = smooth_signal(v_xy, config.smoothing_window)
+    d_smooth_right = smooth_signal(tip_to_table_right, config.smoothing_window)
+    d_smooth_left = smooth_signal(tip_to_table_left, config.smoothing_window)
 
     # 检测低位区间（sweep 区间）
     # 使用单一阈值检测（进入和退出使用同一阈值）
@@ -83,13 +100,17 @@ def plot_sweep_detection(
         min_duration=config.low_region_min_frames
     )
 
-    # 帧数和时间
-    num_frames = len(d_smooth)
-    frames = np.arange(num_frames)
-    times = frames / episode_data.fps
+    # 创建图表 - 2个子图（上：右臂，下：左臂）
+    fig, axes = plt.subplots(2, 1, figsize=figsize, sharex=True)
 
-    # 创建图像
-    fig, ax1 = plt.subplots(figsize=figsize)
+    # 标记 sweep 区间的颜色
+    colors = plt.cm.Set1(np.linspace(0, 1, max(len(keypoints), 1)))
+
+    # === 子图1：右臂刷尖到桌面距离 ===
+    ax1 = axes[0]
+    ax1.plot(time_axis, tip_to_table_right * 100, 'b-', alpha=0.3, label='Raw d(t)')
+    ax1.plot(time_axis, d_smooth_right * 100, 'b-', linewidth=2, label='Smoothed d(t)')
+    ax1.axhline(y=0, color='brown', linestyle='--', linewidth=2, label='Table surface')
 
     # 绘制距离曲线
     ax1.plot(frames, d_smooth * 100, 'b-', linewidth=1.5, label='Tip-to-Table Distance')
@@ -97,155 +118,47 @@ def plot_sweep_detection(
                 label=f'Sweep Threshold ({sweep_threshold*100:.0f}cm)')
 
     # 标记 sweep 区间
-    for i, region in enumerate(sweep_regions):
-        start_frame = region.start
-        end_frame = region.end
-        ax1.axvspan(start_frame, end_frame, alpha=0.3, color='green',
-                   label='Sweep Region' if i == 0 else None)
+    for i, kp in enumerate(keypoints):
+        start_t = kp.P_t0 / fps if show_seconds else kp.P_t0
+        end_t = kp.P_t1 / fps if show_seconds else kp.P_t1
+        color = colors[i % len(colors)]
+        alpha = 0.4 if kp.is_valid else 0.15
 
-        # 在区间中间标注 "Sweep"
-        mid_frame = (start_frame + end_frame) / 2
-        d_min = np.min(d_smooth[start_frame:end_frame+1]) * 100
-        ax1.text(mid_frame, d_min - 1, f'S{i+1}', ha='center', va='top',
-                fontsize=10, fontweight='bold', color='darkgreen')
+        ax1.axvspan(start_t, end_t, alpha=alpha, color=color,
+                   label=f'Sweep {i} {"✓" if kp.is_valid else "✗"}')
 
-    # 设置轴标签和标题
-    ax1.set_xlabel('Frame', fontsize=12)
-    ax1.set_ylabel('Distance to Table (cm)', fontsize=12, color='blue')
-    ax1.tick_params(axis='y', labelcolor='blue')
-    ax1.set_ylim(bottom=-2)  # 允许负值显示（穿透桌面的情况）
-
-    # 添加第二个 x 轴（时间）
-    if show_dual_axis:
-        ax2 = ax1.twiny()
-        ax2.set_xlim(ax1.get_xlim()[0] / episode_data.fps,
-                     ax1.get_xlim()[1] / episode_data.fps)
-        ax2.set_xlabel('Time (s)', fontsize=12)
-
-    # 标题
-    title = f'Episode {episode_data.episode_id}: Sweep Detection'
-    if episode_data.task:
-        # 截断过长的任务描述
-        task_short = episode_data.task[:50] + '...' if len(episode_data.task) > 50 else episode_data.task
-        title += f'\nTask: {task_short}'
-    ax1.set_title(title, fontsize=14)
-
-    # 图例
-    ax1.legend(loc='upper right', fontsize=10)
-
-    # 添加网格
+    ax1.set_ylabel('Tip-to-Table Distance (cm)')
+    ax1.set_title(f'Episode {episode_data.episode_id}: Sweep Detection - Right Arm')
+    ax1.legend(loc='upper right', fontsize=8)
     ax1.grid(True, alpha=0.3)
 
-    plt.tight_layout()
+    # === 子图2：左臂刷尖到桌面距离 ===
+    ax2 = axes[1]
+    ax2.plot(time_axis, tip_to_table_left * 100, 'g-', alpha=0.3, label='Raw d(t)')
+    ax2.plot(time_axis, d_smooth_left * 100, 'g-', linewidth=2, label='Smoothed d(t)')
+    ax2.axhline(y=0, color='brown', linestyle='--', linewidth=2, label='Table surface')
 
-    # 保存图片
-    if output_path:
-        Path(output_path).parent.mkdir(parents=True, exist_ok=True)
-        fig.savefig(output_path, dpi=150, bbox_inches='tight')
-        if config.verbose:
-            print(f"[visualize_sweep] Saved plot to: {output_path}")
-
-    # 诊断数据
-    diagnostic_data = {
-        "num_frames": num_frames,
-        "fps": episode_data.fps,
-        "duration_s": num_frames / episode_data.fps,
-        "d_smooth": d_smooth,
-        "v_xy_smooth": v_xy_smooth,
-        "sweep_regions": sweep_regions,
-        "num_sweeps": len(sweep_regions),
-        "sweep_threshold": sweep_threshold,
-        "d_min": float(np.min(d_smooth)),
-        "d_max": float(np.max(d_smooth)),
-    }
-
-    return fig, diagnostic_data
-
-
-def plot_sweep_detection_detailed(
-    episode_data: EpisodeData,
-    config: SweepSegmentConfig,
-    output_path: Optional[str] = None,
-    figsize: Tuple[int, int] = (14, 10),
-    sweep_threshold: float = 0.05,
-) -> Tuple[plt.Figure, Dict[str, Any]]:
-    """
-    绘制详细的 sweep 检测可视化图（包含速度信息）
-
-    包含两个子图：
-    1. 刷子 tip 到桌面的距离
-    2. 水平速度 v_xy
-
-    Args:
-        episode_data: Episode 数据
-        config: 切分配置
-        output_path: 输出图片路径（可选）
-        figsize: 图片尺寸
-        sweep_threshold: sweep 判定阈值（米）
-
-    Returns:
-        (fig, diagnostic_data)
-    """
-    # 初始化检测器获取完整诊断数据
-    detector = SweepDetector(config)
-    diag = detector.get_diagnostic_data(
-        episode_data.state_trajectory,
-        episode_data.ee_pose_trajectory
-    )
-
-    # 帧数和时间
-    num_frames = len(diag["d_smooth"])
-    frames = np.arange(num_frames)
-    times = frames / episode_data.fps
-
-    # 创建图像
-    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=figsize, sharex=True)
-
-    # ========== 子图1: 距离曲线 ==========
-    ax1.plot(frames, diag["d_smooth"] * 100, 'b-', linewidth=1.5, label='Tip-to-Table Distance')
-
-    # 阈值线
-    ax1.axhline(y=diag["d_threshold_on"] * 100, color='r', linestyle='--',
-                linewidth=1.5, label=f'Enter Threshold (z_on={diag["d_threshold_on"]*100:.0f}cm)')
-    ax1.axhline(y=diag["d_threshold_off"] * 100, color='orange', linestyle=':',
-                linewidth=1.5, label=f'Exit Threshold (z_off={diag["d_threshold_off"]*100:.0f}cm)')
-    ax1.axhline(y=sweep_threshold * 100, color='green', linestyle='-.',
-                linewidth=1.5, label=f'Sweep Threshold ({sweep_threshold*100:.0f}cm)')
+    # 绘制低位阈值线
+    ax2.axhline(y=config.z_on * 100, color='orange', linestyle=':', linewidth=1.5,
+                label=f'z_on threshold ({config.z_on*100:.1f}cm)')
+    ax2.axhline(y=config.z_off * 100, color='red', linestyle=':', linewidth=1.5,
+                label=f'z_off threshold ({config.z_off*100:.1f}cm)')
 
     # 标记 sweep 区间
-    for i, region in enumerate(diag["low_regions"]):
-        ax1.axvspan(region.start, region.end, alpha=0.25, color='green',
-                   label='Sweep Region' if i == 0 else None)
-        # 标注
-        mid_frame = (region.start + region.end) / 2
-        ax1.text(mid_frame, -1, f'S{i+1}', ha='center', va='top',
-                fontsize=10, fontweight='bold', color='darkgreen')
+    for i, kp in enumerate(keypoints):
+        start_t = kp.P_t0 / fps if show_seconds else kp.P_t0
+        end_t = kp.P_t1 / fps if show_seconds else kp.P_t1
+        color = colors[i % len(colors)]
+        alpha = 0.4 if kp.is_valid else 0.15
+        ax2.axvspan(start_t, end_t, alpha=alpha, color=color,
+                   label=f'Sweep {i} {"✓" if kp.is_valid else "✗"}')
 
-    ax1.set_ylabel('Distance to Table (cm)', fontsize=12)
-    ax1.set_ylim(bottom=-3)
-    ax1.legend(loc='upper right', fontsize=9)
-    ax1.grid(True, alpha=0.3)
-    ax1.set_title(f'Episode {episode_data.episode_id}: Tip-to-Table Distance', fontsize=12)
-
-    # ========== 子图2: 速度曲线 ==========
-    ax2.plot(frames, diag["v_xy_smooth"] * 100, 'purple', linewidth=1.5, label='Horizontal Velocity v_xy')
-    ax2.axhline(y=diag["v_xy_threshold"] * 100, color='red', linestyle='--',
-                linewidth=1.5, label=f'v_xy Threshold ({diag["v_xy_threshold"]*100:.2f}cm/frame)')
-
-    # 标记 sweep 区间
-    for region in diag["low_regions"]:
-        ax2.axvspan(region.start, region.end, alpha=0.25, color='green')
-
-    ax2.set_xlabel('Frame', fontsize=12)
-    ax2.set_ylabel('Velocity (cm/frame)', fontsize=12)
-    ax2.legend(loc='upper right', fontsize=9)
+    ax2.set_ylabel('Tip-to-Table Distance (cm)')
+    ax2.set_title(f'Episode {episode_data.episode_id}: Sweep Detection - Left Arm')
+    ax2.set_xlabel(xlabel)
+    ax2.legend(loc='upper right', fontsize=8)
     ax2.grid(True, alpha=0.3)
-    ax2.set_title('Horizontal Velocity v_xy', fontsize=12)
-
-    # 添加时间轴（顶部）
-    ax_time = ax1.twiny()
-    ax_time.set_xlim(0, num_frames / episode_data.fps)
-    ax_time.set_xlabel('Time (s)', fontsize=12)
+    ax2.set_ylim(bottom=-2)
 
     plt.tight_layout()
 
@@ -291,70 +204,146 @@ def generate_sweep_detection_video(
         arm=arm
     )
 
-    # 信号
-    d_smooth = smooth_signal(kin_result.tip_to_table_distance, config.smoothing_window)
-    num_frames = len(d_smooth)
-    frames = np.arange(num_frames)
+    # 计算运动学
+    state_trajectory = episode_data.state_trajectory
+    ee_pose_trajectory = episode_data.ee_pose_trajectory
 
-    # 检测 sweep 区间
-    sweep_regions = detect_low_distance_regions(
-        d_smooth,
-        threshold_on=sweep_threshold,
-        threshold_off=sweep_threshold + 0.02,
-        min_duration=config.low_region_min_frames
-    )
+    # 计算左右两臂的运动学数据
+    if ee_pose_trajectory is not None:
+        kin_result_right = compute_full_kinematics_from_ee_pose(
+            ee_pose_trajectory, arm="right", config=kin_config
+        )
+        kin_result_left = compute_full_kinematics_from_ee_pose(
+            ee_pose_trajectory, arm="left", config=kin_config
+        )
+    else:
+        kinematics = DualArmKinematics(kin_config)
+        kin_result_right = kinematics.compute_full_kinematics(
+            state_trajectory, arm="right"
+        )
+        kin_result_left = kinematics.compute_full_kinematics(
+            state_trajectory, arm="left"
+        )
 
-    # 创建图像
-    fig, ax = plt.subplots(figsize=figsize)
+    # 提取数据
+    tip_to_table_right = kin_result_right.tip_to_table_distance
+    tip_to_table_left = kin_result_left.tip_to_table_distance
 
-    # 静态元素
-    ax.plot(frames, d_smooth * 100, 'b-', linewidth=1.5, alpha=0.7)
-    ax.axhline(y=sweep_threshold * 100, color='r', linestyle='--', linewidth=1.5)
+    N = len(tip_to_table_right)
 
-    for i, region in enumerate(sweep_regions):
-        ax.axvspan(region.start, region.end, alpha=0.25, color='green')
+    # 平滑信号
+    d_smooth_right = smooth_signal(tip_to_table_right, config.smoothing_window)
+    d_smooth_left = smooth_signal(tip_to_table_left, config.smoothing_window)
 
-    ax.set_xlabel('Frame', fontsize=12)
-    ax.set_ylabel('Distance to Table (cm)', fontsize=12)
-    ax.set_title(f'Episode {episode_data.episode_id}: Sweep Detection', fontsize=14)
-    ax.set_ylim(bottom=-2, top=max(d_smooth * 100) + 5)
-    ax.grid(True, alpha=0.3)
+    # 检测 sweep（用于最终标注）- 这里用原始的 active_arm，可能是 "both"
+    detector = SweepDetector(config, kinematics_config=kin_config)
+    keypoints = detector.detect_keypoints(state_trajectory, ee_pose_trajectory)
 
-    # 动态元素
-    current_line = ax.axvline(x=0, color='red', linewidth=2, label='Current Frame')
-    current_point, = ax.plot(0, d_smooth[0] * 100, 'ro', markersize=10)
-    status_text = ax.text(0.02, 0.98, '', transform=ax.transAxes,
-                         fontsize=12, verticalalignment='top',
-                         fontweight='bold')
+    # 时间轴（秒）
+    time_axis = np.arange(N) / fps
+
+    # 创建图表 - 2个子图（上：右臂，下：左臂）
+    fig, axes = plt.subplots(2, 1, figsize=figsize, sharex=True)
+
+    # 设置坐标轴范围
+    ax1, ax2 = axes
+
+    # 子图1：右臂刷尖到桌面距离
+    ax1.set_xlim(0, time_axis[-1])
+    ax1.set_ylim(-2, max(d_smooth_right.max() * 100, 50) * 1.1)
+    ax1.set_ylabel('Tip-to-Table Distance (cm)')
+    ax1.set_title(f'Episode {episode_data.episode_id}: Sweep Detection - Right Arm (Dynamic)')
+    ax1.grid(True, alpha=0.3)
+
+    # 绘制静态元素
+    ax1.axhline(y=0, color='brown', linestyle='--', linewidth=2, label='Table surface')
+    ax1.axhline(y=config.z_on * 100, color='orange', linestyle=':', linewidth=1.5,
+                label=f'z_on ({config.z_on*100:.1f}cm)')
+    ax1.axhline(y=config.z_off * 100, color='red', linestyle=':', linewidth=1.5,
+                label=f'z_off ({config.z_off*100:.1f}cm)')
+
+    # 子图2：左臂刷尖到桌面距离
+    ax2.set_xlim(0, time_axis[-1])
+    ax2.set_ylim(-2, max(d_smooth_left.max() * 100, 50) * 1.1)
+    ax2.set_ylabel('Tip-to-Table Distance (cm)')
+    ax2.set_title(f'Episode {episode_data.episode_id}: Sweep Detection - Left Arm (Dynamic)')
+    ax2.set_xlabel('Time (seconds)')
+    ax2.grid(True, alpha=0.3)
+
+    # 绘制静态元素
+    ax2.axhline(y=0, color='brown', linestyle='--', linewidth=2, label='Table surface')
+    ax2.axhline(y=config.z_on * 100, color='orange', linestyle=':', linewidth=1.5,
+                label=f'z_on ({config.z_on*100:.1f}cm)')
+    ax2.axhline(y=config.z_off * 100, color='red', linestyle=':', linewidth=1.5,
+                label=f'z_off ({config.z_off*100:.1f}cm)')
+
+    # 添加图例
+    ax1.legend(loc='upper right', fontsize=8)
+    ax2.legend(loc='upper right', fontsize=8)
+
+    # 创建动态线条
+    line1_raw, = ax1.plot([], [], 'b-', alpha=0.3, label='Raw d(t)')
+    line1_smooth, = ax1.plot([], [], 'b-', linewidth=2, label='Smoothed d(t)')
+    line2_raw, = ax2.plot([], [], 'g-', alpha=0.3, label='Raw d(t)')
+    line2_smooth, = ax2.plot([], [], 'g-', linewidth=2, label='Smoothed d(t)')
+
+    # 当前帧指示线
+    vline1 = ax1.axvline(x=0, color='gray', linestyle='-', alpha=0.5)
+    vline2 = ax2.axvline(x=0, color='gray', linestyle='-', alpha=0.5)
+
+    # 当前位置点
+    dot1, = ax1.plot([], [], 'ro', markersize=8)
+    dot2, = ax2.plot([], [], 'ro', markersize=8)
+
+    # sweep 区间遮罩（将在检测到时添加）
+    sweep_patches = []
 
     def init():
-        current_line.set_xdata([0])
-        current_point.set_data([0], [d_smooth[0] * 100])
-        status_text.set_text('')
-        return current_line, current_point, status_text
+        line1_raw.set_data([], [])
+        line1_smooth.set_data([], [])
+        line2_raw.set_data([], [])
+        line2_smooth.set_data([], [])
+        dot1.set_data([], [])
+        dot2.set_data([], [])
+        return line1_raw, line1_smooth, line2_raw, line2_smooth, dot1, dot2
 
-    def update(frame):
-        current_line.set_xdata([frame])
-        current_point.set_data([frame], [d_smooth[frame] * 100])
+    def animate(frame):
+        # 当前时间点
+        t = time_axis[:frame+1]
 
-        # 检查是否在 sweep 区间
-        in_sweep = False
-        sweep_idx = -1
-        for i, region in enumerate(sweep_regions):
-            if region.start <= frame <= region.end:
-                in_sweep = True
-                sweep_idx = i + 1
-                break
+        # 更新线条
+        line1_raw.set_data(t, tip_to_table_right[:frame+1] * 100)
+        line1_smooth.set_data(t, d_smooth_right[:frame+1] * 100)
+        line2_raw.set_data(t, tip_to_table_left[:frame+1] * 100)
+        line2_smooth.set_data(t, d_smooth_left[:frame+1] * 100)
 
-        d_current = d_smooth[frame] * 100
-        if in_sweep:
-            status_text.set_text(f'Frame {frame} | d={d_current:.1f}cm | SWEEP #{sweep_idx}')
-            status_text.set_color('green')
-        else:
-            status_text.set_text(f'Frame {frame} | d={d_current:.1f}cm')
-            status_text.set_color('black')
+        # 更新当前帧指示线
+        current_time = time_axis[frame]
+        vline1.set_xdata([current_time, current_time])
+        vline2.set_xdata([current_time, current_time])
 
-        return current_line, current_point, status_text
+        # 更新当前位置点
+        dot1.set_data([current_time], [d_smooth_right[frame] * 100])
+        dot2.set_data([current_time], [d_smooth_left[frame] * 100])
+
+        # 检查是否在 sweep 区间内，添加遮罩
+        colors = plt.cm.Set1(np.linspace(0, 1, max(len(keypoints), 1)))
+        for i, kp in enumerate(keypoints):
+            # 当动画进入 sweep 区间时添加遮罩
+            if frame >= kp.P_t0 and frame <= kp.P_t1:
+                # 检查是否已经添加了这个 sweep 的遮罩
+                patch_id = f"sweep_{i}"
+                if patch_id not in [p[0] for p in sweep_patches]:
+                    start_t = kp.P_t0 / fps
+                    end_t = kp.P_t1 / fps
+                    color = colors[i % len(colors)]
+                    alpha = 0.4 if kp.is_valid else 0.15
+
+                    p1 = ax1.axvspan(start_t, end_t, alpha=alpha, color=color)
+                    p2 = ax2.axvspan(start_t, end_t, alpha=alpha, color=color)
+                    sweep_patches.append((patch_id, p1, p2))
+
+        return line1_raw, line1_smooth, line2_raw, line2_smooth, dot1, dot2, vline1, vline2
 
     # 创建动画
     anim = FuncAnimation(fig, update, frames=range(num_frames),
