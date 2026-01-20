@@ -59,30 +59,33 @@ def plot_sweep_detection_for_episode(
     state_trajectory = episode_data.state_trajectory
     ee_pose_trajectory = episode_data.ee_pose_trajectory
 
-    # 对于 "both" 模式，可视化默认显示左臂数据
-    viz_arm = config.active_arm if config.active_arm != "both" else "left"
-
+    # 计算左右两臂的运动学数据
     if ee_pose_trajectory is not None:
         from .kinematics import compute_full_kinematics_from_ee_pose
-        kin_result = compute_full_kinematics_from_ee_pose(
-            ee_pose_trajectory, arm=viz_arm, config=kin_config
+        kin_result_right = compute_full_kinematics_from_ee_pose(
+            ee_pose_trajectory, arm="right", config=kin_config
+        )
+        kin_result_left = compute_full_kinematics_from_ee_pose(
+            ee_pose_trajectory, arm="left", config=kin_config
         )
     else:
         kinematics = DualArmKinematics(kin_config)
-        kin_result = kinematics.compute_full_kinematics(
-            state_trajectory, arm=viz_arm
+        kin_result_right = kinematics.compute_full_kinematics(
+            state_trajectory, arm="right"
+        )
+        kin_result_left = kinematics.compute_full_kinematics(
+            state_trajectory, arm="left"
         )
 
     # 提取数据
-    tip_to_table = kin_result.tip_to_table_distance  # 刷尖到桌面距离
-    v_xy = kin_result.v_xy
-    v_z = kin_result.v_z
+    tip_to_table_right = kin_result_right.tip_to_table_distance
+    tip_to_table_left = kin_result_left.tip_to_table_distance
 
-    N = len(tip_to_table)
+    N = len(tip_to_table_right)
 
     # 平滑信号
-    d_smooth = smooth_signal(tip_to_table, config.smoothing_window)
-    v_xy_smooth = smooth_signal(v_xy, config.smoothing_window)
+    d_smooth_right = smooth_signal(tip_to_table_right, config.smoothing_window)
+    d_smooth_left = smooth_signal(tip_to_table_left, config.smoothing_window)
 
     # 检测 sweep
     detector = SweepDetector(config, kinematics_config=kin_config)
@@ -96,13 +99,16 @@ def plot_sweep_detection_for_episode(
         time_axis = np.arange(N)
         xlabel = "Frame"
 
-    # 创建图表
-    fig, axes = plt.subplots(3, 1, figsize=figsize, sharex=True)
+    # 创建图表 - 2个子图（上：右臂，下：左臂）
+    fig, axes = plt.subplots(2, 1, figsize=figsize, sharex=True)
 
-    # === 子图1：刷尖到桌面距离 ===
+    # 标记 sweep 区间的颜色
+    colors = plt.cm.Set1(np.linspace(0, 1, max(len(keypoints), 1)))
+
+    # === 子图1：右臂刷尖到桌面距离 ===
     ax1 = axes[0]
-    ax1.plot(time_axis, tip_to_table * 100, 'b-', alpha=0.3, label='Raw d(t)')
-    ax1.plot(time_axis, d_smooth * 100, 'b-', linewidth=2, label='Smoothed d(t)')
+    ax1.plot(time_axis, tip_to_table_right * 100, 'b-', alpha=0.3, label='Raw d(t)')
+    ax1.plot(time_axis, d_smooth_right * 100, 'b-', linewidth=2, label='Smoothed d(t)')
     ax1.axhline(y=0, color='brown', linestyle='--', linewidth=2, label='Table surface')
 
     # 绘制低位阈值线
@@ -112,7 +118,6 @@ def plot_sweep_detection_for_episode(
                 label=f'z_off threshold ({config.z_off*100:.1f}cm)')
 
     # 标记 sweep 区间
-    colors = plt.cm.Set1(np.linspace(0, 1, max(len(keypoints), 1)))
     for i, kp in enumerate(keypoints):
         start_t = kp.P_t0 / fps if show_seconds else kp.P_t0
         end_t = kp.P_t1 / fps if show_seconds else kp.P_t1
@@ -123,26 +128,22 @@ def plot_sweep_detection_for_episode(
                    label=f'Sweep {i} {"✓" if kp.is_valid else "✗"}')
 
     ax1.set_ylabel('Tip-to-Table Distance (cm)')
-    ax1.set_title(f'Episode {episode_data.episode_id}: Sweep Detection Visualization (Low Region Based)')
+    ax1.set_title(f'Episode {episode_data.episode_id}: Sweep Detection - Right Arm')
     ax1.legend(loc='upper right', fontsize=8)
     ax1.grid(True, alpha=0.3)
     ax1.set_ylim(bottom=-2)
 
-    # === 子图2：水平速度 v_xy ===
+    # === 子图2：左臂刷尖到桌面距离 ===
     ax2 = axes[1]
-    ax2.plot(time_axis, v_xy * 100, 'g-', alpha=0.3, label='Raw v_xy')
-    ax2.plot(time_axis, v_xy_smooth * 100, 'g-', linewidth=2, label='Smoothed v_xy')
+    ax2.plot(time_axis, tip_to_table_left * 100, 'g-', alpha=0.3, label='Raw d(t)')
+    ax2.plot(time_axis, d_smooth_left * 100, 'g-', linewidth=2, label='Smoothed d(t)')
+    ax2.axhline(y=0, color='brown', linestyle='--', linewidth=2, label='Table surface')
 
-    # 计算阈值
-    v_xy_percentile = config.energy_percentile
-    v_xy_threshold = np.percentile(v_xy_smooth, v_xy_percentile)
-    v_xy_mean = np.mean(v_xy_smooth)
-    v_xy_std = np.std(v_xy_smooth)
-    min_threshold = v_xy_mean + 0.3 * v_xy_std
-    v_xy_threshold = max(v_xy_threshold, min_threshold, 1e-6)
-
-    ax2.axhline(y=v_xy_threshold * 100, color='r', linestyle='--',
-               label=f'v_xy threshold ({v_xy_percentile}th pct)')
+    # 绘制低位阈值线
+    ax2.axhline(y=config.z_on * 100, color='orange', linestyle=':', linewidth=1.5,
+                label=f'z_on threshold ({config.z_on*100:.1f}cm)')
+    ax2.axhline(y=config.z_off * 100, color='red', linestyle=':', linewidth=1.5,
+                label=f'z_off threshold ({config.z_off*100:.1f}cm)')
 
     # 标记 sweep 区间
     for i, kp in enumerate(keypoints):
@@ -150,29 +151,15 @@ def plot_sweep_detection_for_episode(
         end_t = kp.P_t1 / fps if show_seconds else kp.P_t1
         color = colors[i % len(colors)]
         alpha = 0.4 if kp.is_valid else 0.15
-        ax2.axvspan(start_t, end_t, alpha=alpha, color=color)
+        ax2.axvspan(start_t, end_t, alpha=alpha, color=color,
+                   label=f'Sweep {i} {"✓" if kp.is_valid else "✗"}')
 
-    ax2.set_ylabel('Horizontal Velocity v_xy (cm/s)')
+    ax2.set_ylabel('Tip-to-Table Distance (cm)')
+    ax2.set_title(f'Episode {episode_data.episode_id}: Sweep Detection - Left Arm')
+    ax2.set_xlabel(xlabel)
     ax2.legend(loc='upper right', fontsize=8)
     ax2.grid(True, alpha=0.3)
-
-    # === 子图3：垂向速度 v_z ===
-    ax3 = axes[2]
-    ax3.plot(time_axis, v_z * 100, 'm-', alpha=0.5, linewidth=1, label='v_z')
-    ax3.axhline(y=0, color='k', linestyle='-', linewidth=0.5)
-
-    # 标记 sweep 区间
-    for i, kp in enumerate(keypoints):
-        start_t = kp.P_t0 / fps if show_seconds else kp.P_t0
-        end_t = kp.P_t1 / fps if show_seconds else kp.P_t1
-        color = colors[i % len(colors)]
-        alpha = 0.4 if kp.is_valid else 0.15
-        ax3.axvspan(start_t, end_t, alpha=alpha, color=color)
-
-    ax3.set_ylabel('Vertical Velocity v_z (cm/s)')
-    ax3.set_xlabel(xlabel)
-    ax3.legend(loc='upper right', fontsize=8)
-    ax3.grid(True, alpha=0.3)
+    ax2.set_ylim(bottom=-2)
 
     plt.tight_layout()
 
@@ -223,29 +210,32 @@ def generate_sweep_detection_video(
     state_trajectory = episode_data.state_trajectory
     ee_pose_trajectory = episode_data.ee_pose_trajectory
 
-    # 对于 "both" 模式，可视化默认显示左臂数据
-    viz_arm = config.active_arm if config.active_arm != "both" else "left"
-
+    # 计算左右两臂的运动学数据
     if ee_pose_trajectory is not None:
-        kin_result = compute_full_kinematics_from_ee_pose(
-            ee_pose_trajectory, arm=viz_arm, config=kin_config
+        kin_result_right = compute_full_kinematics_from_ee_pose(
+            ee_pose_trajectory, arm="right", config=kin_config
+        )
+        kin_result_left = compute_full_kinematics_from_ee_pose(
+            ee_pose_trajectory, arm="left", config=kin_config
         )
     else:
         kinematics = DualArmKinematics(kin_config)
-        kin_result = kinematics.compute_full_kinematics(
-            state_trajectory, arm=viz_arm
+        kin_result_right = kinematics.compute_full_kinematics(
+            state_trajectory, arm="right"
+        )
+        kin_result_left = kinematics.compute_full_kinematics(
+            state_trajectory, arm="left"
         )
 
     # 提取数据
-    tip_to_table = kin_result.tip_to_table_distance
-    v_xy = kin_result.v_xy
-    v_z = kin_result.v_z
+    tip_to_table_right = kin_result_right.tip_to_table_distance
+    tip_to_table_left = kin_result_left.tip_to_table_distance
 
-    N = len(tip_to_table)
+    N = len(tip_to_table_right)
 
     # 平滑信号
-    d_smooth = smooth_signal(tip_to_table, config.smoothing_window)
-    v_xy_smooth = smooth_signal(v_xy, config.smoothing_window)
+    d_smooth_right = smooth_signal(tip_to_table_right, config.smoothing_window)
+    d_smooth_left = smooth_signal(tip_to_table_left, config.smoothing_window)
 
     # 检测 sweep（用于最终标注）- 这里用原始的 active_arm，可能是 "both"
     detector = SweepDetector(config, kinematics_config=kin_config)
@@ -254,25 +244,17 @@ def generate_sweep_detection_video(
     # 时间轴（秒）
     time_axis = np.arange(N) / fps
 
-    # 计算 v_xy 阈值
-    v_xy_percentile = config.energy_percentile
-    v_xy_threshold = np.percentile(v_xy_smooth, v_xy_percentile)
-    v_xy_mean = np.mean(v_xy_smooth)
-    v_xy_std = np.std(v_xy_smooth)
-    min_threshold = v_xy_mean + 0.3 * v_xy_std
-    v_xy_threshold = max(v_xy_threshold, min_threshold, 1e-6)
-
-    # 创建图表
-    fig, axes = plt.subplots(3, 1, figsize=figsize, sharex=True)
+    # 创建图表 - 2个子图（上：右臂，下：左臂）
+    fig, axes = plt.subplots(2, 1, figsize=figsize, sharex=True)
 
     # 设置坐标轴范围
-    ax1, ax2, ax3 = axes
+    ax1, ax2 = axes
 
-    # 子图1：刷尖到桌面距离
+    # 子图1：右臂刷尖到桌面距离
     ax1.set_xlim(0, time_axis[-1])
-    ax1.set_ylim(-2, max(d_smooth.max() * 100, 50) * 1.1)
+    ax1.set_ylim(-2, max(d_smooth_right.max() * 100, 50) * 1.1)
     ax1.set_ylabel('Tip-to-Table Distance (cm)')
-    ax1.set_title(f'Episode {episode_data.episode_id}: Sweep Detection (Dynamic)')
+    ax1.set_title(f'Episode {episode_data.episode_id}: Sweep Detection - Right Arm (Dynamic)')
     ax1.grid(True, alpha=0.3)
 
     # 绘制静态元素
@@ -282,22 +264,20 @@ def generate_sweep_detection_video(
     ax1.axhline(y=config.z_off * 100, color='red', linestyle=':', linewidth=1.5,
                 label=f'z_off ({config.z_off*100:.1f}cm)')
 
-    # 子图2：水平速度
+    # 子图2：左臂刷尖到桌面距离
     ax2.set_xlim(0, time_axis[-1])
-    ax2.set_ylim(0, max(v_xy_smooth.max() * 100, 30) * 1.1)
-    ax2.set_ylabel('Horizontal Velocity v_xy (cm/s)')
+    ax2.set_ylim(-2, max(d_smooth_left.max() * 100, 50) * 1.1)
+    ax2.set_ylabel('Tip-to-Table Distance (cm)')
+    ax2.set_title(f'Episode {episode_data.episode_id}: Sweep Detection - Left Arm (Dynamic)')
+    ax2.set_xlabel('Time (seconds)')
     ax2.grid(True, alpha=0.3)
-    ax2.axhline(y=v_xy_threshold * 100, color='r', linestyle='--',
-                label=f'v_xy threshold ({v_xy_percentile}th pct)')
 
-    # 子图3：垂向速度
-    ax3.set_xlim(0, time_axis[-1])
-    v_z_max = max(abs(v_z.min()), abs(v_z.max())) * 100
-    ax3.set_ylim(-v_z_max * 1.2, v_z_max * 1.2)
-    ax3.set_ylabel('Vertical Velocity v_z (cm/s)')
-    ax3.set_xlabel('Time (seconds)')
-    ax3.grid(True, alpha=0.3)
-    ax3.axhline(y=0, color='k', linestyle='-', linewidth=0.5)
+    # 绘制静态元素
+    ax2.axhline(y=0, color='brown', linestyle='--', linewidth=2, label='Table surface')
+    ax2.axhline(y=config.z_on * 100, color='orange', linestyle=':', linewidth=1.5,
+                label=f'z_on ({config.z_on*100:.1f}cm)')
+    ax2.axhline(y=config.z_off * 100, color='red', linestyle=':', linewidth=1.5,
+                label=f'z_off ({config.z_off*100:.1f}cm)')
 
     # 添加图例
     ax1.legend(loc='upper right', fontsize=8)
@@ -306,19 +286,16 @@ def generate_sweep_detection_video(
     # 创建动态线条
     line1_raw, = ax1.plot([], [], 'b-', alpha=0.3, label='Raw d(t)')
     line1_smooth, = ax1.plot([], [], 'b-', linewidth=2, label='Smoothed d(t)')
-    line2_raw, = ax2.plot([], [], 'g-', alpha=0.3)
-    line2_smooth, = ax2.plot([], [], 'g-', linewidth=2)
-    line3, = ax3.plot([], [], 'm-', alpha=0.5, linewidth=1)
+    line2_raw, = ax2.plot([], [], 'g-', alpha=0.3, label='Raw d(t)')
+    line2_smooth, = ax2.plot([], [], 'g-', linewidth=2, label='Smoothed d(t)')
 
     # 当前帧指示线
     vline1 = ax1.axvline(x=0, color='gray', linestyle='-', alpha=0.5)
     vline2 = ax2.axvline(x=0, color='gray', linestyle='-', alpha=0.5)
-    vline3 = ax3.axvline(x=0, color='gray', linestyle='-', alpha=0.5)
 
     # 当前位置点
     dot1, = ax1.plot([], [], 'ro', markersize=8)
     dot2, = ax2.plot([], [], 'ro', markersize=8)
-    dot3, = ax3.plot([], [], 'ro', markersize=8)
 
     # sweep 区间遮罩（将在检测到时添加）
     sweep_patches = []
@@ -328,33 +305,28 @@ def generate_sweep_detection_video(
         line1_smooth.set_data([], [])
         line2_raw.set_data([], [])
         line2_smooth.set_data([], [])
-        line3.set_data([], [])
         dot1.set_data([], [])
         dot2.set_data([], [])
-        dot3.set_data([], [])
-        return line1_raw, line1_smooth, line2_raw, line2_smooth, line3, dot1, dot2, dot3
+        return line1_raw, line1_smooth, line2_raw, line2_smooth, dot1, dot2
 
     def animate(frame):
         # 当前时间点
         t = time_axis[:frame+1]
 
         # 更新线条
-        line1_raw.set_data(t, tip_to_table[:frame+1] * 100)
-        line1_smooth.set_data(t, d_smooth[:frame+1] * 100)
-        line2_raw.set_data(t, v_xy[:frame+1] * 100)
-        line2_smooth.set_data(t, v_xy_smooth[:frame+1] * 100)
-        line3.set_data(t, v_z[:frame+1] * 100)
+        line1_raw.set_data(t, tip_to_table_right[:frame+1] * 100)
+        line1_smooth.set_data(t, d_smooth_right[:frame+1] * 100)
+        line2_raw.set_data(t, tip_to_table_left[:frame+1] * 100)
+        line2_smooth.set_data(t, d_smooth_left[:frame+1] * 100)
 
         # 更新当前帧指示线
         current_time = time_axis[frame]
         vline1.set_xdata([current_time, current_time])
         vline2.set_xdata([current_time, current_time])
-        vline3.set_xdata([current_time, current_time])
 
         # 更新当前位置点
-        dot1.set_data([current_time], [d_smooth[frame] * 100])
-        dot2.set_data([current_time], [v_xy_smooth[frame] * 100])
-        dot3.set_data([current_time], [v_z[frame] * 100])
+        dot1.set_data([current_time], [d_smooth_right[frame] * 100])
+        dot2.set_data([current_time], [d_smooth_left[frame] * 100])
 
         # 检查是否在 sweep 区间内，添加遮罩
         colors = plt.cm.Set1(np.linspace(0, 1, max(len(keypoints), 1)))
@@ -371,10 +343,9 @@ def generate_sweep_detection_video(
 
                     p1 = ax1.axvspan(start_t, end_t, alpha=alpha, color=color)
                     p2 = ax2.axvspan(start_t, end_t, alpha=alpha, color=color)
-                    p3 = ax3.axvspan(start_t, end_t, alpha=alpha, color=color)
-                    sweep_patches.append((patch_id, p1, p2, p3))
+                    sweep_patches.append((patch_id, p1, p2))
 
-        return line1_raw, line1_smooth, line2_raw, line2_smooth, line3, dot1, dot2, dot3, vline1, vline2, vline3
+        return line1_raw, line1_smooth, line2_raw, line2_smooth, dot1, dot2, vline1, vline2
 
     # 创建动画
     anim = animation.FuncAnimation(
