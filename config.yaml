@@ -1,0 +1,26 @@
+# Sweep-AutoSplit 配置文件
+# Configuration for mask generation and video rendering
+
+# 四边形 ROI 区域的四个角点（顺时针或逆时针）
+# 图像分辨率为 224x224
+# 只有在这个四边形内部的 mask 才会被保留
+
+corners:
+  - [79.0, 42.0]        # 左上
+  - [157.0, 39.0]        # 右上
+  - [170.0, 165.0]        # 右下
+  - [65.0, 168.0]        # 左下
+
+# Mask 渲染设置
+mask_rendering:
+  # Mask 颜色 (BGR 格式，与 OpenCV 一致)
+  # 例如: [255, 0, 255] 是紫色
+  color: [0, 255, 0]
+
+  # Mask 透明度 (0.0 = 完全透明, 1.0 = 完全不透明)
+  alpha: 0.7
+
+# 图像分辨率（用于验证角点坐标）
+image_size:
+  width: 224
+  height: 224

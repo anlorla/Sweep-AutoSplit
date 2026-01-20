@@ -162,8 +162,11 @@ d(t) [cm]
 | `--H` | int | 30 | Action horizon |
 | `--A-min` | int | 2 | Approach 最少帧数 |
 | `--R-min` | int | 2 | Retreat 最少帧数 |
+| `--export_workers` | int | 1 | 视频导出并行进程数 |
 | `--export-mask` | flag | True | 导出 sweep mask |
 | `--no-export-mask` | flag | - | 不导出 mask |
+
+> **并行导出**: 仅视频导出阶段支持多进程并行，导出前的准备步骤与统计信息计算仍保持串行。
 
 ### visualize_sweep.py 参数
 

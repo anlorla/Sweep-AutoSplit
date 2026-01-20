@@ -22,6 +22,7 @@ from typing import List, Dict, Any, Optional, Tuple
 from dataclasses import dataclass, field
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from datetime import datetime
+from tqdm import tqdm
 
 try:
     import cv2
@@ -30,7 +31,14 @@ except ImportError:
     CV2_AVAILABLE = False
 
 from .config import SegmentBoundary, SweepSegmentConfig
-from .mask_generator import SweepMaskGenerator, create_mask_generator, MaskConfig
+from .mask_generator import (
+    SweepMaskGenerator,
+    create_mask_generator,
+    MaskConfig,
+    ROIConfig,
+    load_roi_config,
+    get_roi_config,
+)
 
 
 def check_ffmpeg_available() -> bool:
@@ -56,13 +64,15 @@ class ExportConfig:
     fps: int = 10
     chunks_size: int = 1000
     num_workers: int = 8
+    export_workers: int = 1
     overwrite: bool = True
     export_videos: bool = True
     video_codec: str = "mp4v"
     verbose: bool = True
     # Mask export options
     export_mask: bool = True  # 是否导出 sweep mask
-    mask_method: str = "hsv"  # mask 分割方法: "hsv" 或 "sam3"
+    # ROI config path (for mask filtering)
+    roi_config_path: Optional[str] = None
 
 
 @dataclass
@@ -95,9 +105,12 @@ class LeRobotSegmentExporter:
         self.source_metadata = source_metadata
         self.output_path = config.output_path
 
+        # 加载 ROI 配置
+        self.roi_config = load_roi_config(config.roi_config_path)
+
         # 初始化 mask 生成器
         if config.export_mask:
-            self.mask_generator = create_mask_generator(config.mask_method)
+            self.mask_generator = create_mask_generator(roi_config=self.roi_config)
         else:
             self.mask_generator = None
 
@@ -554,9 +567,17 @@ class LeRobotSegmentExporter:
         if mask.shape[0] != height or mask.shape[1] != width:
             mask = cv2.resize(mask, (width, height), interpolation=cv2.INTER_NEAREST)
 
-        # 创建彩色 mask（紫色高亮）
+        # 获取 mask 颜色和透明度（从 ROI 配置）
+        if self.roi_config is not None:
+            mask_color_bgr = list(self.roi_config.mask_color)
+            alpha = self.roi_config.mask_alpha
+        else:
+            mask_color_bgr = [255, 0, 255]  # 默认紫色 (BGR)
+            alpha = 0.4  # 默认透明度
+
+        # 创建彩色 mask
         mask_color = np.zeros((height, width, 3), dtype=np.uint8)
-        mask_color[mask > 0] = [255, 0, 255]  # 紫色 (BGR)
+        mask_color[mask > 0] = mask_color_bgr
 
         # 创建输出视频
         for codec in ['avc1', 'mp4v', 'XVID']:
@@ -571,9 +592,6 @@ class LeRobotSegmentExporter:
 
         # 定位到起始帧
         cap.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
-
-        # 叠加参数
-        alpha = 0.4  # mask 透明度
 
         # 处理每一帧
         for _ in range(num_frames):
@@ -590,8 +608,8 @@ class LeRobotSegmentExporter:
             blended = cv2.addWeighted(frame, 1 - alpha, overlay, alpha, 0)
 
             # 添加标签
-            cv2.putText(blended, "Sweep Mask", (10, 30),
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2)
+            # cv2.putText(blended, "Sweep Mask", (10, 30),
+            #            cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2)
 
             out.write(blended)
 
@@ -627,6 +645,31 @@ class LeRobotSegmentExporter:
         exported_df, frame_count = self._export_parquet_segment(
             source_df, segment_info, source_start_frame
         )
+
+        self.export_segment_videos(segment_info, source_video_paths, frame_count=frame_count)
+
+        # 返回 episode 元数据
+        return {
+            "episode_index": new_episode_id,
+            "tasks": [segment_info.task_string],
+            "length": frame_count
+        }
+
+    def export_segment_videos(
+        self,
+        segment_info: SegmentExportInfo,
+        source_video_paths: Dict[str, str],
+        frame_count: Optional[int] = None,
+    ) -> None:
+        """导出单个 segment 的视频与 mask"""
+        if not (self.config.export_videos or self.config.export_mask):
+            return
+
+        boundary = segment_info.boundary
+        new_episode_id = segment_info.new_episode_id
+        chunk_idx = new_episode_id // self.config.chunks_size
+        if frame_count is None:
+            frame_count = boundary.T_t1 - boundary.T_t0 + 1
 
         # 导出视频
         if self.config.export_videos:
@@ -692,13 +735,6 @@ class LeRobotSegmentExporter:
                     print(f"Warning: Mask generation failed for episode {new_episode_id}: {e}")
                 # 继续执行，不要中断整个导出流程
 
-        # 返回 episode 元数据
-        return {
-            "episode_index": new_episode_id,
-            "tasks": [segment_info.task_string],
-            "length": frame_count
-        }
-
     def export_all_segments(
         self,
         data_loader,  # LeRobotDataLoader
@@ -760,34 +796,79 @@ class LeRobotSegmentExporter:
         episode_metadata_list = []
         episode_data_list = []
         total_frames = 0
+        video_tasks = []
 
-        for i, export_info in enumerate(export_infos):
-            # 加载源数据
-            source_data = data_loader.load_episode(export_info.source_episode_id)
-            source_df = data_loader.load_episode_raw(export_info.source_episode_id)
+        # 使用 tqdm 显示导出进度
+        with tqdm(total=len(export_infos), desc="Exporting segments", unit="segment") as pbar:
+            for i, export_info in enumerate(export_infos):
+                # 加载源数据
+                source_data = data_loader.load_episode(export_info.source_episode_id)
+                source_df = data_loader.load_episode_raw(export_info.source_episode_id)
 
-            # 导出 segment
-            episode_meta = self.export_segment(
-                source_df=source_df,
-                segment_info=export_info,
-                source_video_paths=source_data.video_paths or {},
-            )
-            episode_metadata_list.append(episode_meta)
-            total_frames += episode_meta["length"]
+                # 导出 parquet
+                exported_df, frame_count = self._export_parquet_segment(
+                    source_df, export_info, 0
+                )
+                episode_meta = {
+                    "episode_index": export_info.new_episode_id,
+                    "tasks": [export_info.task_string],
+                    "length": frame_count
+                }
+                episode_metadata_list.append(episode_meta)
+                total_frames += episode_meta["length"]
 
-            # 加载导出的数据用于统计
-            chunk_idx = export_info.new_episode_id // self.config.chunks_size
-            parquet_path = (
-                self.output_path / "data" / f"chunk-{chunk_idx:03d}" /
-                f"episode_{export_info.new_episode_id:06d}.parquet"
-            )
-            episode_data_list.append(pd.read_parquet(parquet_path))
+                if self.config.export_videos or self.config.export_mask:
+                    video_tasks.append((export_info, source_data.video_paths or {}))
 
-            if progress_callback:
-                progress_callback(i + 1, len(export_infos))
+                # 加载导出的数据用于统计
+                chunk_idx = export_info.new_episode_id // self.config.chunks_size
+                parquet_path = (
+                    self.output_path / "data" / f"chunk-{chunk_idx:03d}" /
+                    f"episode_{export_info.new_episode_id:06d}.parquet"
+                )
+                episode_data_list.append(pd.read_parquet(parquet_path))
 
-            if self.config.verbose and (i + 1) % 10 == 0:
-                print(f"Exported {i + 1}/{len(export_infos)} segments")
+                # 更新进度条，显示已完成和剩余的数量
+                pbar.set_postfix({
+                    'completed': i + 1,
+                    'remaining': len(export_infos) - i - 1
+                })
+                pbar.update(1)
+
+                if progress_callback:
+                    progress_callback(i + 1, len(export_infos))
+
+        if self.config.export_videos or self.config.export_mask:
+            if self.config.export_workers <= 1:
+                with tqdm(total=len(video_tasks), desc="Exporting videos", unit="video") as pbar:
+                    for export_info, source_video_paths in video_tasks:
+                        self.export_segment_videos(export_info, source_video_paths)
+                        pbar.update(1)
+            else:
+                if self.config.verbose:
+                    print(f"Exporting videos with {self.config.export_workers} workers")
+                with ProcessPoolExecutor(
+                    max_workers=self.config.export_workers,
+                    initializer=_init_export_worker,
+                    initargs=(self.config, self.source_metadata),
+                ) as executor:
+                    future_to_episode = {
+                        executor.submit(
+                            _export_segment_videos_task,
+                            export_info,
+                            source_video_paths,
+                        ): export_info.new_episode_id
+                        for export_info, source_video_paths in video_tasks
+                    }
+                    with tqdm(total=len(future_to_episode), desc="Exporting videos", unit="video") as pbar:
+                        for future in as_completed(future_to_episode):
+                            episode_id = future_to_episode[future]
+                            try:
+                                future.result()
+                            except Exception as e:
+                                if self.config.verbose:
+                                    print(f"Warning: Video export failed for episode {episode_id}: {e}")
+                            pbar.update(1)
 
         # Phase 4: 计算统计信息
         if self.config.verbose:
@@ -978,7 +1059,8 @@ def export_segmented_dataset(
     config: Optional[SweepSegmentConfig] = None,
     task_prefix: str = "sweep",
     export_mask: bool = True,
-    mask_method: str = "hsv"
+    roi_config_path: Optional[str] = None,
+    export_workers: int = 1,
 ) -> Dict[str, Any]:
     """
     便捷函数：导出切分后的数据集
@@ -990,7 +1072,8 @@ def export_segmented_dataset(
         config: 切分配置（可选）
         task_prefix: 任务前缀
         export_mask: 是否导出 sweep mask
-        mask_method: mask 分割方法 ("hsv" 或 "sam3")
+        roi_config_path: ROI 配置文件路径（用于 mask 过滤）
+        export_workers: 视频导出并行进程数
 
     Returns:
         导出统计信息
@@ -1006,7 +1089,8 @@ def export_segmented_dataset(
         fps=data_loader.fps,
         verbose=config.verbose if config else True,
         export_mask=export_mask,
-        mask_method=mask_method
+        roi_config_path=roi_config_path,
+        export_workers=export_workers,
     )
 
     # 创建导出器
@@ -1020,3 +1104,21 @@ def export_segmented_dataset(
     )
 
     return stats
+
+
+_EXPORTER_WORKER = None
+
+
+def _init_export_worker(export_config: ExportConfig, source_metadata: Dict[str, Any]) -> None:
+    global _EXPORTER_WORKER
+    _EXPORTER_WORKER = LeRobotSegmentExporter(export_config, source_metadata)
+
+
+def _export_segment_videos_task(
+    segment_info: SegmentExportInfo,
+    source_video_paths: Dict[str, str],
+) -> int:
+    if _EXPORTER_WORKER is None:
+        raise RuntimeError("Exporter worker not initialized")
+    _EXPORTER_WORKER.export_segment_videos(segment_info, source_video_paths)
+    return segment_info.new_episode_id
