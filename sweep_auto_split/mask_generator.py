@@ -2,9 +2,10 @@
 Mask 生成模块
 
 从视频帧中生成 sweep 的动态 mask：
-M_t = mask(frame_{T_t0}) XOR mask(frame_{T_t1})
+M_t = mask(frame_{T_t0}) AND NOT mask(frame_{T_t1})
 
-该 mask 表示"这次 sweep 会改变哪些区域"，作为训练的 visual prompt。
+该 mask 表示"这次 sweep 扫走了哪些红色区域"（首帧有但尾帧没有的区域），
+作为训练的 visual prompt。
 
 使用 HSV 颜色分割方法（快速，适合红色乐高积木）
 """
@@ -694,9 +695,9 @@ class SweepMaskGenerator:
     """
     Sweep动态mask生成器
 
-    核心功能：生成 M_t = mask(T_t0) XOR mask(T_t1)
+    核心功能：生成 M_t = mask(T_t0) AND NOT mask(T_t1)
 
-    该mask表示一次sweep前后的变化区域，作为训练时的visual prompt。
+    该mask表示一次sweep扫走的红色区域（首帧有但尾帧没有），作为训练时的visual prompt。
     支持四边形 ROI 过滤，只保留指定区域内的 mask。
     """
 
@@ -738,7 +739,9 @@ class SweepMaskGenerator:
         """
         生成单次sweep的动态mask
 
-        M_t = mask(frame_{T_t0}) XOR mask(frame_{T_t1})
+        M_t = mask(frame_{T_t0}) AND NOT mask(frame_{T_t1})
+
+        只保留首帧有但尾帧没有的红色区域（被sweep扫走的LEGO）
 
         Args:
             video_path: 视频路径
@@ -773,9 +776,10 @@ class SweepMaskGenerator:
         mask_t0 = self.segmenter.segment(frame_t0)
         mask_t1 = self.segmenter.segment(frame_t1)
 
-        # 计算差异 (XOR)
-        # XOR: 在t0有但t1没有 + 在t1有但t0没有
-        sweep_mask = cv2.bitwise_xor(mask_t0, mask_t1)
+        # 计算差异 (只保留 t0 有但 t1 没有的区域)
+        # 这些是被 sweep 走的红色区域（消失的 LEGO）
+        # sweep_mask = mask_t0 AND (NOT mask_t1)
+        sweep_mask = cv2.bitwise_and(mask_t0, cv2.bitwise_not(mask_t1))
 
         # 应用四边形 ROI 过滤
         if self.config.enable_roi_filter and self.roi_config is not None:
@@ -905,7 +909,7 @@ class SweepMaskGenerator:
         overlay_sweep[sweep_mask > 0] = mask_color
         blended_sweep = cv2.addWeighted(frame_t1, 1 - alpha, overlay_sweep, alpha, 0)
         grid[h:, w:] = blended_sweep
-        self._add_label(grid, f"Sweep Mask (XOR, area: {np.sum(sweep_mask > 0)}px)", (w + 10, h + 30))
+        self._add_label(grid, f"Sweep Mask (t0 & ~t1, area: {np.sum(sweep_mask > 0)}px)", (w + 10, h + 30))
 
         # 绘制分隔线
         grid[h-1:h+1, :] = [128, 128, 128]
